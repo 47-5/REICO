@@ -4,6 +4,8 @@ from ase.constraints import FixAtoms, UnitCellFilter
 import deepmd
 from deepmd.calculator import DP
 import os
+from os.path import basename, join
+from glob import glob
 
 
 __all__ = ['opt_a_mol']
@@ -94,15 +96,38 @@ def opt_a_mol(read_file_path, read_file_format=None, write_file_path='opted.xyz'
 
 
 if __name__ == '__main__':
-    atoms = opt_a_mol(
-        read_file_path='reico_random_structs/structure_000001.cif',
-        read_file_format='cif',
-        write_file_path='opted.cif',
-        write_file_format='cif',
-        dp_model_path='DPA3_finetune_zeo_iter009_GaHY_01.pth',
-        head='GaHY',
-        traj_path='optimization_traj.pdb',
-        traj_format='proteindatabank',
-        traj_interval=1,
-        opt_cell=True
-    )
+
+    run_mode = 'batch'
+
+    if run_mode == 'single':
+        atoms = opt_a_mol(
+            read_file_path='reico_random_structs/structure_000001.cif',
+            read_file_format='cif',
+            write_file_path='opted.cif',
+            write_file_format='cif',
+            dp_model_path='DPA3_finetune_zeo_iter009_GaHY_01.pth',
+            head='GaHY',
+            traj_path='optimization_traj.pdb',
+            traj_format='proteindatabank',
+            traj_interval=1,
+            opt_cell=True
+        )
+
+    elif run_mode == 'batch':
+        init_structure_root = 'reico_random_structs'
+        opted_structure_root = 'reico_random_structs_opted'
+        os.makedirs(opted_structure_root, exist_ok=True)
+
+        for file_path in glob(f'{init_structure_root}/*.cif'):
+            atoms = opt_a_mol(
+                read_file_path=file_path,
+                read_file_format='cif',
+                write_file_path=join(opted_structure_root, basename(file_path)),
+                write_file_format='cif',
+                dp_model_path='DPA3_finetune_zeo_iter009_GaHY_01.pth',
+                head='GaHY',
+                traj_path=join(opted_structure_root, f'{basename(file_path).split('.')[0]}_optimization_traj.pdb'),
+                traj_format='proteindatabank',
+                traj_interval=1,
+                opt_cell=True
+            )
