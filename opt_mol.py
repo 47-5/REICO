@@ -7,12 +7,15 @@ import os
 from os.path import basename, join
 from glob import glob
 
+os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
+
 
 __all__ = ['opt_a_mol']
 
 
 def opt_a_mol(read_file_path, read_file_format=None, write_file_path='opted.xyz', write_file_format='xyz',
-              dp_model_path=None, head=None, only_relax_H=False, maxstep=0.05, f_max=0.05,
+              dp_model_path=None, head=None, calculator=None,
+              only_relax_H=False, maxstep=0.05, f_max=0.05,
               traj_path=None, traj_format='xyz', traj_interval=1, opt_cell=False):
     """
     Optimizes a molecular structure using a deep potential model and writes the optimized structure to a file.
@@ -41,8 +44,11 @@ def opt_a_mol(read_file_path, read_file_format=None, write_file_path='opted.xyz'
     Returns:
     - ase.Atoms: The optimized atomic structure.
     """
-    if dp_model_path is None:
-        dp_model_path = os.path.join('DPA2_medium_28_10M_rc0.pt')
+    if calculator is None:
+        if dp_model_path is None:
+            dp_model_path = os.path.join('DPA2_medium_28_10M_rc0.pt')
+        calculator = DP(model=dp_model_path, head=head)
+
 
     atoms = read(filename=read_file_path, format=read_file_format)
 
@@ -51,7 +57,7 @@ def opt_a_mol(read_file_path, read_file_format=None, write_file_path='opted.xyz'
         constraint = FixAtoms(indices=mask)
         atoms.set_constraint(constraint)
 
-    calculator = DP(model=dp_model_path, head=head)
+    # calculator = DP(model=dp_model_path, head=head)
     atoms.calc = calculator
 
     optimizer_target = atoms
@@ -89,7 +95,7 @@ def opt_a_mol(read_file_path, read_file_format=None, write_file_path='opted.xyz'
 
     optimizer = BFGS(optimizer_target, logfile='-')
     optimizer.attach(callback, interval=1)
-    optimizer.run(fmax=f_max)
+    optimizer.run(fmax=f_max, steps=1000)
 
     write(filename=write_file_path, images=atoms, format=write_file_format)
     return atoms
@@ -114,11 +120,21 @@ if __name__ == '__main__':
         )
 
     elif run_mode == 'batch':
+        dp_calculator = DP(model='DPA3_finetune_zeo_iter009_GaHY_01.pth', head='GaHY')
         init_structure_root = 'reico_random_structs'
+        init_structure_filepath_list = glob(f'{init_structure_root}/*.cif')
+
+        # init_structure_filepath_list = []
+        # for i in range(1, len(glob(f'{init_structure_root}/*.cif'))):
+        #     path = join(init_structure_root, f'structure_{str(i).zfill(6)}.cif')
+        #     init_structure_filepath_list.append(path)
+        init_structure_filepath_list.sort()
+
         opted_structure_root = 'reico_random_structs_opted'
         os.makedirs(opted_structure_root, exist_ok=True)
 
-        for file_path in glob(f'{init_structure_root}/*.cif'):
+        for file_path in init_structure_filepath_list:
+            print(file_path)
             atoms = opt_a_mol(
                 read_file_path=file_path,
                 read_file_format='cif',
@@ -126,6 +142,7 @@ if __name__ == '__main__':
                 write_file_format='cif',
                 dp_model_path='DPA3_finetune_zeo_iter009_GaHY_01.pth',
                 head='GaHY',
+                calculator=dp_calculator,
                 traj_path=join(opted_structure_root, f'{basename(file_path).split('.')[0]}_optimization_traj.pdb'),
                 traj_format='proteindatabank',
                 traj_interval=1,
