@@ -1,0 +1,51 @@
+# numerical precision
+PREC=Accurate
+ENCUT = 520  # basis
+
+# initialization
+ISTART = 0
+ICHARG = 2
+ISPIN=2
+# MAGMOM = 16*0.6
+
+# io
+LWAVE = .FALSE.
+LCHARG = .FALSE.
+
+# SCF
+ALGO=N
+NELM=120
+EDIFF=1E-6
+ISMEAR = 0
+SIGMA = 0.05
+LASPH = True
+LREAL= Auto
+
+# OPT
+# IBRION=2  
+# NSW=200
+# ISIF=2
+# EDIFFG=-0.03
+
+# SP
+IBRION=-1
+NSW=0
+ISIF=2
+
+# correction
+# Dispersion correction
+IVDW=11  
+# DFT+U
+#LDAU      = .TRUE.
+#LDAUTYPE  = 2
+#LDAUL     = 2 -1
+#LDAUU     = 5.00 0.00
+#LDAUJ     = 0.00 0.00
+#LDAUPRINT = 1
+#LMAXMIX   = 4 
+
+# Parallel setting
+NCORE = 4
+
+# KPOINT
+KSPACING = 0.2
