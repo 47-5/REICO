@@ -10,12 +10,14 @@ Enhancements:
    - "incremental": place atoms one-by-one with local distance checks (faster, fewer NxN distance matrices).
 3) position_stats can be enabled/disabled, and max_nn check can be toggled to reduce rejection cost.
 
-JSON (global keys):
-- sampling_mode: "resample" (default) | "incremental"
-- cell_angle_range: {"alpha":[min,max],"beta":[min,max],"gamma":[min,max]}  (degrees)
-- cell_length_ratio_range: [min,max] (optional; controls axis ratio variability)
-- enable_position_stats: true|false (default true)
-- check_max_nn: true|false (default true to keep prior behavior)
+Output scheme (Scheme B, clarified):
+- Per-structure files:
+    controlled by JSON key: "format"  (e.g. "vasp", "xyz", "extxyz", ...)
+    written under: outdir/<job_name>/structure_000001.<format>
+- Merged files:
+    ALWAYS written in extxyz format (content is extxyz regardless of filename)
+    - Per job merged: outdir/<job_name>.extxyz
+    - Global merged:  outdir/<merged>   (recommended name endswith .extxyz)
 """
 
 import json
@@ -60,14 +62,6 @@ def pick_int_in_range(rng):
     return random.randint(lo, hi)
 
 
-def pick_float_in_range(rng):
-    """rng: [min, max] inclusive-ish for float 从给定的范围内采样一个浮点数"""
-    lo, hi = float(rng[0]), float(rng[1])
-    if hi < lo:
-        raise ValueError(f"Invalid float range: {rng}")
-    return random.uniform(lo, hi)
-
-
 def composition_from_ranges(elem_ranges: dict) -> tuple[list[str], dict]:
     """
     elem_ranges: {"Pt":[1,12], "O":[1,12]}
@@ -91,9 +85,7 @@ def composition_from_ranges(elem_ranges: dict) -> tuple[list[str], dict]:
 # Geometry / constraints
 # ----------------------------
 def min_dist_matrix(symbols: list[str], scale: float) -> np.ndarray:
-    """
-    获得原子最小间距矩阵
-    """
+    """获得原子最小间距矩阵"""
     radii = [covalent_radii[atomic_numbers[s]] for s in symbols]
     n = len(symbols)
     m = np.zeros((n, n), dtype=float)
@@ -107,7 +99,7 @@ def estimate_volume_from_covalent_spheres(symbols: list[str], packing: float = 1
     """
     Sum of (4/3 pi r^3) per atom * packing factor.
     packing>1 yields larger cells, fewer rejections.
-    把原子当初半径为范德华半径的球，估计总体积，从而估计晶胞体积
+    把原子当作半径为共价半径的球，估计总体积，从而估计晶胞体积
     """
     vol = 0.0
     for s in symbols:
@@ -128,13 +120,10 @@ def cell_matrix_from_lengths_angles(a: float, b: float, c: float,
     beta = math.radians(beta_deg)
     gamma = math.radians(gamma_deg)
 
-    # Guard against invalid angles leading to negative sqrt
-    # Using standard crystallographic formula
     va = np.array([a, 0.0, 0.0], dtype=float)
     vb = np.array([b * math.cos(gamma), b * math.sin(gamma), 0.0], dtype=float)
 
     cx = c * math.cos(beta)
-    # Avoid division by zero if gamma ~ 0 or 180
     sin_gamma = math.sin(gamma)
     if abs(sin_gamma) < 1e-8:
         return None
@@ -145,8 +134,7 @@ def cell_matrix_from_lengths_angles(a: float, b: float, c: float,
         return None
     vc = np.array([cx, cy, math.sqrt(cz2)], dtype=float)
 
-    cell = np.vstack([va, vb, vc])
-    return cell
+    return np.vstack([va, vb, vc])
 
 
 def random_general_cell_from_volume(volume: float,
@@ -156,10 +144,6 @@ def random_general_cell_from_volume(volume: float,
                                     max_tries: int = 5000) -> np.ndarray:
     """
     Generate a general (possibly non-orthogonal) cell matrix with volume in [fmin*V, fmax*V].
-    Strategy:
-      - sample angles within provided ranges (or default to 90/90/90 if None)
-      - sample relative axis length ratios (to avoid extreme cells) then scale to target volume
-    Returns: (3,3) cell matrix
     """
     volume = max(float(volume), 1e-6)
     fmin, fmax = float(volume_factor_range[0]), float(volume_factor_range[1])
@@ -169,7 +153,6 @@ def random_general_cell_from_volume(volume: float,
     if angle_ranges is None:
         angle_ranges = {"alpha": (90.0, 90.0), "beta": (90.0, 90.0), "gamma": (90.0, 90.0)}
     else:
-        # accept lists
         angle_ranges = {
             "alpha": (float(angle_ranges["alpha"][0]), float(angle_ranges["alpha"][1])),
             "beta": (float(angle_ranges["beta"][0]), float(angle_ranges["beta"][1])),
@@ -188,19 +171,12 @@ def random_general_cell_from_volume(volume: float,
         beta = random.uniform(*angle_ranges["beta"])
         gamma = random.uniform(*angle_ranges["gamma"])
 
-        # sample relative axis ratios; enforce within [rmin, rmax]
-        # Start from a base scale s, then b = s*rb, c = s*rc, with rb, rc in [rmin,rmax]
         rb = random.uniform(rmin, rmax)
         rc = random.uniform(rmin, rmax)
 
-        # choose a target volume within range
         target_vol = random.uniform(fmin * volume, fmax * volume)
 
-        # Use a=1 initially; compute provisional cell volume factor from angles and ratios, then scale
-        a0 = 1.0
-        b0 = rb
-        c0 = rc
-        cell0 = cell_matrix_from_lengths_angles(a0, b0, c0, alpha, beta, gamma)
+        cell0 = cell_matrix_from_lengths_angles(1.0, rb, rc, alpha, beta, gamma)
         if cell0 is None:
             continue
 
@@ -211,7 +187,6 @@ def random_general_cell_from_volume(volume: float,
         scale = (target_vol / vol0) ** (1.0 / 3.0)
         cell = cell0 * scale
 
-        # quick sanity: avoid absurdly small shortest vector
         lengths = np.linalg.norm(cell, axis=1)
         if np.min(lengths) < 1e-3:
             continue
@@ -223,10 +198,7 @@ def random_general_cell_from_volume(volume: float,
 
 
 def enforce_min_dist_by_resampling(atoms: Atoms, min_dists: np.ndarray, max_attempts: int) -> bool:
-    """
-    Sample scaled positions in [0,1)^3 until all pair distances >= min_dists.
-    Uses MIC distances (pbc must be True).
-    """
+    """Sample scaled positions in [0,1)^3 until all pair distances >= min_dists. Uses MIC."""
     n = len(atoms)
     for _ in range(max_attempts):
         pos = np.random.rand(n, 3)
@@ -241,8 +213,7 @@ def enforce_min_dist_by_resampling(atoms: Atoms, min_dists: np.ndarray, max_atte
 def place_atoms_incremental_general(atoms: Atoms, min_dists: np.ndarray, max_trials_per_atom: int) -> bool:
     """
     Incrementally place atoms in fractional coordinates for a general cell.
-    MIC done in fractional space: ds -= round(ds), dr = ds @ cell.
-    Avoids repeated full NxN distance matrices.
+    MIC in fractional space: ds -= round(ds), dr = ds @ cell.
     """
     n = len(atoms)
     cell = np.array(atoms.get_cell())  # (3,3)
@@ -255,9 +226,9 @@ def place_atoms_incremental_general(atoms: Atoms, min_dists: np.ndarray, max_tri
                 scaled[i] = si
                 break
 
-            ds = si - scaled[:i]   # (i,3)
-            ds -= np.round(ds)     # MIC wrap to [-0.5,0.5)
-            dr = ds @ cell         # (i,3) Cartesian
+            ds = si - scaled[:i]
+            ds -= np.round(ds)
+            dr = ds @ cell
             dist2 = np.einsum("ij,ij->i", dr, dr)
 
             thr = min_dists[i, :i]
@@ -274,7 +245,6 @@ def place_atoms_incremental_general(atoms: Atoms, min_dists: np.ndarray, max_tri
 def position_stats(atoms: Atoms) -> tuple[float, float]:
     """Return (min nearest-neighbor distance, max nearest-neighbor distance)."""
     d = atoms.get_all_distances(mic=True)
-    # nearest neighbor per atom: second smallest (first is self 0)
     nn = np.partition(d, 1, axis=1)[:, 1]
     return float(np.min(nn)), float(np.max(nn))
 
@@ -291,23 +261,19 @@ class GenParams:
     tolerance_min_nn: float = 1.6
     tolerance_max_nn: float = 3.0
 
-    # New: sampling mode and cell constraints
     sampling_mode: str = "resample"  # "resample" | "incremental"
-    cell_angle_range: dict | None = None  # {"alpha":[..,..],"beta":[..,..],"gamma":[..,..]}
-    cell_length_ratio_range: tuple[float, float] | None = None  # (min,max)
+    cell_angle_range: dict | None = None
+    cell_length_ratio_range: tuple[float, float] | None = None
 
-    enable_position_stats: bool = True
-    check_max_nn: bool = True
+    enable_position_stats: bool = False
+    check_max_nn: bool = False
 
 
 # ----------------------------
 # Structure generators
 # ----------------------------
 def gen_mix_structure(elem_ranges: dict, vacuum: float, params: GenParams) -> Atoms | None:
-    """
-    General structure (bulk/slab) with PBC True.
-    If vacuum>0: center along z with that vacuum thickness on both sides.
-    """
+    """General structure (bulk/slab) with PBC True. If vacuum>0: center along z."""
     for _ in range(params.max_attempts_struct):
         symbols, _ = composition_from_ranges(elem_ranges)
         vol = estimate_volume_from_covalent_spheres(symbols, packing=params.volume_packing)
@@ -326,9 +292,10 @@ def gen_mix_structure(elem_ranges: dict, vacuum: float, params: GenParams) -> At
 
         min_d = min_dist_matrix(symbols, params.min_dist_scale)
 
-        if params.sampling_mode.lower() == "resample":
+        mode = params.sampling_mode.lower()
+        if mode == "resample":
             ok = enforce_min_dist_by_resampling(atoms, min_d, params.max_attempts_pos)
-        elif params.sampling_mode.lower() == "incremental":
+        elif mode == "incremental":
             ok = place_atoms_incremental_general(atoms, min_d, params.max_attempts_pos)
         else:
             raise ValueError(f"Unknown sampling_mode: {params.sampling_mode} (use 'resample' or 'incremental')")
@@ -355,7 +322,6 @@ def gen_cluster_structure(elem_ranges: dict, vacuum: float, params: GenParams) -
     if atoms is None:
         return None
 
-    # Keep cell as 3x3, then add vacuum around cluster
     cellpar = atoms.cell.cellpar()
     a, b, c = float(cellpar[0]), float(cellpar[1]), float(cellpar[2])
     atoms.set_cell([a, b, c])
@@ -412,10 +378,7 @@ def _one_structure(kind: str, payload: dict, vacuum: float, params_dict: dict) -
 # ----------------------------
 def main(config_path: str | None = None):
     if config_path is None:
-        if len(sys.argv) >= 2:
-            config_path = sys.argv[1]
-        else:
-            config_path = "input.json"
+        config_path = sys.argv[1] if len(sys.argv) >= 2 else "input.json"
 
     jdata = load_json_strict(config_path)
 
@@ -423,23 +386,28 @@ def main(config_path: str | None = None):
     outdir = Path(jdata.get("outdir", "reico_out"))
     outdir.mkdir(parents=True, exist_ok=True)
 
-    out_format = jdata.get("format", "extxyz")
-    output_all = jdata.get("output", "all.extxyz")
+    # Per-structure file format (user-controlled)
+    per_structure_format = str(jdata.get("format", "extxyz"))
+
+    # Merged output (always extxyz)
+    merged_name = str(jdata.get("merged", jdata.get("output", "all.extxyz")))
+    merged_format = str(jdata.get("merged_format", "extxyz")).lower()
+    if merged_format != "extxyz":
+        raise ValueError("merged_format is fixed to 'extxyz' in this output scheme.")
 
     seed = jdata.get("seed", None)
     set_global_seed(seed)
 
-    # New globals
     sampling_mode = str(jdata.get("sampling_mode", "resample"))
     enable_position_stats = bool(jdata.get("enable_position_stats", True))
     check_max_nn = bool(jdata.get("check_max_nn", True))
 
     cell_angle_range = jdata.get("cell_angle_range", None)
     if cell_angle_range is not None:
-        # validate presence
         for key in ("alpha", "beta", "gamma"):
             if key not in cell_angle_range:
                 raise ValueError("cell_angle_range must contain alpha,beta,gamma ranges")
+
     cell_length_ratio_range = jdata.get("cell_length_ratio_range", None)
     if cell_length_ratio_range is not None:
         cell_length_ratio_range = (float(cell_length_ratio_range[0]), float(cell_length_ratio_range[1]))
@@ -451,7 +419,6 @@ def main(config_path: str | None = None):
         "volume_packing": float(jdata.get("volume_packing", 1.2)),
         "tolerance_min_nn": float(jdata.get("tolerance_min_nn", 1.6)),
         "tolerance_max_nn": float(jdata.get("tolerance_max_nn", 3.0)),
-
         "sampling_mode": sampling_mode,
         "cell_angle_range": cell_angle_range,
         "cell_length_ratio_range": cell_length_ratio_range,
@@ -459,22 +426,17 @@ def main(config_path: str | None = None):
         "check_max_nn": check_max_nn,
     }
 
-    # Build tasks
-    kinds = []
-    payloads = []
-    vacuums = []
-
     global_keys = {
-        "nproc", "output", "outdir", "format", "seed",
+        "nproc", "outdir", "format", "seed",
+        "merged", "merged_format", "output",  # output kept for backward compatibility
         "min_dist_scale", "max_attempts_pos", "max_attempts_struct",
         "volume_packing", "tolerance_min_nn", "tolerance_max_nn",
         "sampling_mode", "cell_angle_range", "cell_length_ratio_range",
         "enable_position_stats", "check_max_nn",
     }
 
-    n_requested = 0
-    job_order = []
-
+    # Parse jobs in JSON order
+    jobs = []
     for job_name, conf in jdata.items():
         if job_name in global_keys:
             continue
@@ -498,62 +460,89 @@ def main(config_path: str | None = None):
         else:
             raise ValueError(f"Job {job_name} must contain one of: mix/cluster/ad")
 
-        job_order.append(job_name)
-        n_requested += numbers
-        for _ in range(numbers):
-            kinds.append(kind)
-            payloads.append(payload)
-            vacuums.append(vacuum)
+        jobs.append({
+            "name": job_name,
+            "kind": kind,
+            "payload": payload,
+            "vacuum": vacuum,
+            "numbers": numbers,
+        })
 
-    # Parallel generate (with progress bar)
-    atoms_list = []
     parallel_kwargs = dict(n_jobs=nproc, backend="loky", verbose=0)
 
-    desc = f"Generating structures (n_jobs={nproc})"
+    merged_all: list[Atoms] = []
+    meta_jobs = []
 
-    try:
-        gen = Parallel(**parallel_kwargs, return_as="generator_unordered")(
-            delayed(_one_structure)(k, p, v, params_dict)
-            for k, p, v in zip(kinds, payloads, vacuums)
-        )
-        for a in tqdm(gen, total=n_requested, desc=desc, unit="struct"):
+    for job in jobs:
+        job_name = job["name"]
+        kind = job["kind"]
+        payload = job["payload"]
+        vacuum = job["vacuum"]
+        numbers = job["numbers"]
+
+        job_dir = outdir / job_name
+        job_dir.mkdir(parents=True, exist_ok=True)
+
+        desc = f"{job_name} (n={numbers}, n_jobs={nproc})"
+        tasks = (delayed(_one_structure)(kind, payload, vacuum, params_dict) for _ in range(numbers))
+        res = Parallel(**parallel_kwargs)(tasks)
+
+        atoms_list = []
+        for a in tqdm(res, total=numbers, desc=desc, unit="struct"):
             if a is not None:
                 atoms_list.append(a)
-    except TypeError:
-        res = Parallel(**parallel_kwargs)(
-            delayed(_one_structure)(k, p, v, params_dict)
-            for k, p, v in zip(kinds, payloads, vacuums)
-        )
-        for a in tqdm(res, total=n_requested, desc=desc, unit="struct"):
-            if a is not None:
-                atoms_list.append(a)
 
-    # Write per-structure files
-    for i, atoms in enumerate(atoms_list, start=1):
-        atoms.info["id"] = i
-        fname = outdir / f"structure_{i:06d}.{out_format}"
-        write(fname, atoms, format=out_format)
+        # Per-structure files under job directory (format controlled by per_structure_format)
+        for i, atoms in enumerate(atoms_list, start=1):
+            atoms.info["job"] = job_name
+            atoms.info["job_index"] = i
+            write(job_dir / f"structure_{i:06d}.{per_structure_format}", atoms, format=per_structure_format)
 
-    # Write merged xyz
-    write(outdir / output_all, atoms_list, format="extxyz")
+        # Per-job merged file (ALWAYS extxyz)
+        job_merged_file = outdir / f"{job_name}.extxyz"
+        if atoms_list:
+            for i, atoms in enumerate(atoms_list, start=1):
+                atoms.info["job"] = job_name
+                atoms.info["job_index"] = i
+            write(job_merged_file, atoms_list, format="extxyz")
 
-    # Metadata
+        merged_all.extend(atoms_list)
+
+        meta_jobs.append({
+            "name": job_name,
+            "kind": kind,
+            "vacuum": vacuum,
+            "numbers_requested": numbers,
+            "numbers_generated": len(atoms_list),
+            "dir": str(job_dir),
+            "merged_file": str(job_merged_file.name),
+        })
+
+    # Global merged file (ALWAYS extxyz), concatenated in job order
+    merged_path = outdir / merged_name
+    if merged_all:
+        for gid, atoms in enumerate(merged_all, start=1):
+            atoms.info["global_id"] = gid
+        write(merged_path, merged_all, format="extxyz")
+
     meta = {
-        "n_generated": len(atoms_list),
-        "n_requested": n_requested,
+        "n_generated": len(merged_all),
+        "n_requested": int(sum(j["numbers"] for j in jobs)),
         "nproc": nproc,
-        "jobs": job_order,
+        "jobs": meta_jobs,
         "params": params_dict,
-        "per_structure_format": out_format,
+        "per_structure_format": per_structure_format,
         "outdir": str(outdir),
-        "merged_xyz": output_all,
+        "merged_file": str(merged_path.name),
+        "merged_format": "extxyz",
         "parallel": {"library": "joblib", "backend": "loky"},
         "progress": {"library": "tqdm"},
+        "output_scheme": "B: per-job dirs (format=per_structure_format) + merged extxyz",
     }
     with (outdir / "metadata.json").open("w", encoding="utf-8") as f:
         json.dump(meta, f, indent=2, ensure_ascii=False)
 
-    print(f"Done. Generated {len(atoms_list)}/{n_requested} structures in {outdir}/")
+    print(f"Done. Generated {len(merged_all)}/{meta['n_requested']} structures in {outdir}/")
 
 
 if __name__ == "__main__":
