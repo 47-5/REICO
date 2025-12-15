@@ -53,7 +53,7 @@ if __name__ == '__main__':
     elif run_mode == 'batch':
         batch_root = 'batch_vasp'
 
-        input_file_path_list = glob('./reico_random_structs_opted/*.cif')
+        input_file_path_list = glob('./reico_random_structs/*.cif')
         input_file_path_list.sort()
 
         for i in input_file_path_list:
