@@ -16,36 +16,66 @@
     "gamma": [60, 120]
   },
 
-  "cell_length_ratio_range": [0.5, 2],
+  "cell_length_ratio_range": [0.8, 1.5],
 
-  "PtO-bulk": {
-    "mix": { "Pt": [1, 12], "O": [1, 12] },
+  "SiO-bulk": {
+    "mix": { "Si": [1, 12], "O": [1, 12] },
     "vacuum": 0,
     "numbers": 2000
   },
 
-  "PtO-surface": {
-    "mix": { "Pt": [1, 12], "O": [1, 12] },
+  "GaO-bulk": {
+    "mix": { "Ga": [1, 12], "O": [1, 12] },
+    "vacuum": 0,
+    "numbers": 2000
+  },
+
+  "GaSiO-bulk": {
+    "mix": { "Ga": [1, 12], "O": [1, 12], "Si": [1,12] },
+    "vacuum": 0,
+    "numbers": 2000
+  },
+
+  "GaSiOH-bulk": {
+    "mix": { "Ga": [1, 8], "O": [1, 8], "Si": [1, 8], "H": [1, 8]},
+    "vacuum": 0,
+    "numbers": 2000
+  },
+
+  "GaO-surface": {
+    "mix": { "Ga": [1, 12], "O": [1, 12] },
     "vacuum": 8,
     "numbers": 2000
   },
 
-  "PtO-ad": {
-    "ad": {
-      "base": { "Pd": [4, 16] },
-      "adsorption": { "O": [1, 6] }
-    },
+  "GaH-surface": {
+    "mix": { "Ga": [1, 12], "H": [1, 12] },
     "vacuum": 8,
     "numbers": 2000
   },
 
-  "PtCO-ad": {
-    "ad": {
-      "base": { "Pd": [4, 16] },
-      "adsorption": { "O": [1, 6] , "C": [1, 6]}
-    },
+  "GaOH-surface": {
+    "mix": { "Ga": [1, 12], "O": [1, 12], "H": [1, 12] },
     "vacuum": 8,
     "numbers": 2000
+  },
+
+  "SiO-GaOH-ad": {
+    "ad": {
+      "base": { "Si": [4, 12], "O": [4, 12] },
+      "adsorption": { "Ga": [1, 6], "H": [2, 6], "O": [2, 6] }
+    },
+    "vacuum": 8,
+    "numbers": 4000
+  },
+
+  "GaO-SiOH-ad": {
+    "ad": {
+      "base": { "Ga": [4, 12], "O": [4, 12] },
+      "adsorption": { "Si": [1, 6], "H": [2, 6], "O": [2, 6] }
+    },
+    "vacuum": 8,
+    "numbers": 4000
   },
 
   "CO-cluster": {

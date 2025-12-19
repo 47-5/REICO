@@ -242,6 +242,57 @@ def place_atoms_incremental_general(atoms: Atoms, min_dists: np.ndarray, max_tri
     return True
 
 
+def place_atoms_incremental_general_bounded_z(
+    atoms: Atoms,
+    min_dists: np.ndarray,
+    max_trials_per_atom: int,
+    z_bounds: list[tuple[float, float]] | None = None,
+) -> bool:
+    """
+    Incrementally place atoms in fractional coordinates for a general cell,
+    with optional per-atom fractional z bounds: z in [zlo, zhi).
+
+    MIC in fractional space: ds -= round(ds), dr = ds @ cell.
+    """
+    n = len(atoms)
+    cell = np.array(atoms.get_cell())  # (3,3)
+    scaled = np.empty((n, 3), dtype=float)
+
+    for i in range(n):
+        if z_bounds is None:
+            zlo, zhi = 0.0, 1.0
+        else:
+            zlo, zhi = z_bounds[i]
+            zlo, zhi = float(zlo), float(zhi)
+            zlo = max(0.0, zlo)
+            zhi = min(1.0, zhi)
+            if zhi <= zlo:
+                return False
+
+        for _ in range(max_trials_per_atom):
+            si = np.random.rand(3)
+            si[2] = zlo + (zhi - zlo) * np.random.rand()
+
+            if i == 0:
+                scaled[i] = si
+                break
+
+            ds = si - scaled[:i]
+            ds -= np.round(ds)
+            dr = ds @ cell
+            dist2 = np.einsum("ij,ij->i", dr, dr)
+
+            thr = min_dists[i, :i]
+            if np.all(dist2 >= thr * thr):
+                scaled[i] = si
+                break
+        else:
+            return False
+
+    atoms.set_scaled_positions(scaled)
+    return True
+
+
 def position_stats(atoms: Atoms) -> tuple[float, float]:
     """Return (min nearest-neighbor distance, max nearest-neighbor distance)."""
     d = atoms.get_all_distances(mic=True)
@@ -272,10 +323,58 @@ class GenParams:
 # ----------------------------
 # Structure generators
 # ----------------------------
-def gen_mix_structure(elem_ranges: dict, vacuum: float, params: GenParams) -> Atoms | None:
-    """General structure (bulk/slab) with PBC True. If vacuum>0: center along z."""
+# def gen_mix_structure(elem_ranges: dict, vacuum: float, params: GenParams) -> Atoms | None:
+#     """General structure (bulk/slab) with PBC True. If vacuum>0: center along z."""
+#     for _ in range(params.max_attempts_struct):
+#         symbols, _ = composition_from_ranges(elem_ranges)
+#         vol = estimate_volume_from_covalent_spheres(symbols, packing=params.volume_packing)
+#
+#         cell = random_general_cell_from_volume(
+#             vol,
+#             angle_ranges=params.cell_angle_range,
+#             length_ratio_range=params.cell_length_ratio_range,
+#             volume_factor_range=(1.2, 5.0),
+#             max_tries=5000,
+#         )
+#
+#         atoms = Atoms(symbols=symbols)
+#         atoms.set_cell(cell, scale_atoms=False)
+#         atoms.pbc = True
+#
+#         min_d = min_dist_matrix(symbols, params.min_dist_scale)
+#
+#         mode = params.sampling_mode.lower()
+#         if mode == "resample":
+#             ok = enforce_min_dist_by_resampling(atoms, min_d, params.max_attempts_pos)
+#         elif mode == "incremental":
+#             ok = place_atoms_incremental_general(atoms, min_d, params.max_attempts_pos)
+#         else:
+#             raise ValueError(f"Unknown sampling_mode: {params.sampling_mode} (use 'resample' or 'incremental')")
+#
+#         if not ok:
+#             continue
+#
+#         if params.enable_position_stats:
+#             min_nn, max_nn = position_stats(atoms)
+#             if min_nn <= params.tolerance_min_nn:
+#                 continue
+#             if params.check_max_nn and (max_nn >= params.tolerance_max_nn):
+#                 continue
+#
+#         if vacuum and vacuum > 0:
+#             atoms.center(vacuum=vacuum, axis=2)
+#
+#         return atoms
+#     return None
+
+
+def gen_structure_from_symbols(symbols: list[str], vacuum: float, params: GenParams,
+                              z_bounds: list[tuple[float, float]] | None = None) -> Atoms | None:
+    """
+    General structure generator given an explicit symbol list (order matters),
+    optional bounded-z placement for incremental sampling.
+    """
     for _ in range(params.max_attempts_struct):
-        symbols, _ = composition_from_ranges(elem_ranges)
         vol = estimate_volume_from_covalent_spheres(symbols, packing=params.volume_packing)
 
         cell = random_general_cell_from_volume(
@@ -294,9 +393,13 @@ def gen_mix_structure(elem_ranges: dict, vacuum: float, params: GenParams) -> At
 
         mode = params.sampling_mode.lower()
         if mode == "resample":
+            # resample 模式暂不支持 z_bounds（你当前 JSON 是 incremental，所以没问题）
             ok = enforce_min_dist_by_resampling(atoms, min_d, params.max_attempts_pos)
         elif mode == "incremental":
-            ok = place_atoms_incremental_general(atoms, min_d, params.max_attempts_pos)
+            if z_bounds is None:
+                ok = place_atoms_incremental_general(atoms, min_d, params.max_attempts_pos)
+            else:
+                ok = place_atoms_incremental_general_bounded_z(atoms, min_d, params.max_attempts_pos, z_bounds=z_bounds)
         else:
             raise ValueError(f"Unknown sampling_mode: {params.sampling_mode} (use 'resample' or 'incremental')")
 
@@ -314,6 +417,17 @@ def gen_mix_structure(elem_ranges: dict, vacuum: float, params: GenParams) -> At
             atoms.center(vacuum=vacuum, axis=2)
 
         return atoms
+
+    return None
+
+
+def gen_mix_structure(elem_ranges: dict, vacuum: float, params: GenParams) -> Atoms | None:
+    """General structure (bulk/slab) with PBC True. If vacuum>0: center along z."""
+    for _ in range(params.max_attempts_struct):
+        symbols, _ = composition_from_ranges(elem_ranges)
+        atoms = gen_structure_from_symbols(symbols, vacuum=vacuum, params=params, z_bounds=None)
+        if atoms is not None:
+            return atoms
     return None
 
 
@@ -332,29 +446,67 @@ def gen_cluster_structure(elem_ranges: dict, vacuum: float, params: GenParams) -
     return atoms
 
 
+# def gen_adsorption_structure(ad_conf: dict, vacuum: float, params: GenParams) -> Atoms | None:
+#     base_syms, base_counts = composition_from_ranges(ad_conf["base"])
+#     ad_syms, ad_counts = composition_from_ranges(ad_conf["adsorption"])
+#     base_n = len(base_syms)
+#     ad_n = len(ad_syms)
+#
+#     fixed_ranges = {}
+#     for el, n in base_counts.items():
+#         fixed_ranges[el] = [n, n]
+#     for el, n in ad_counts.items():
+#         fixed_ranges[el] = [n, n]
+#
+#     atoms = gen_mix_structure(fixed_ranges, vacuum=vacuum, params=params)
+#     if atoms is None:
+#         return None
+#
+#     pos_sorted = np.array(sorted(atoms.positions, key=lambda p: p[2]))
+#     base_pos = pos_sorted[:base_n].copy()
+#     ad_pos = pos_sorted[base_n:base_n + ad_n].copy()
+#
+#     np.random.shuffle(base_pos)
+#     np.random.shuffle(ad_pos)
+#     atoms.set_positions(np.vstack([base_pos, ad_pos]))
+#     return atoms
+
 def gen_adsorption_structure(ad_conf: dict, vacuum: float, params: GenParams) -> Atoms | None:
-    base_syms, base_counts = composition_from_ranges(ad_conf["base"])
-    ad_syms, ad_counts = composition_from_ranges(ad_conf["adsorption"])
+    base_syms, _ = composition_from_ranges(ad_conf["base"])
+    ad_syms, _ = composition_from_ranges(ad_conf["adsorption"])
+
     base_n = len(base_syms)
     ad_n = len(ad_syms)
 
-    fixed_ranges = {}
-    for el, n in base_counts.items():
-        fixed_ranges[el] = [n, n]
-    for el, n in ad_counts.items():
-        fixed_ranges[el] = [n, n]
+    # 固定身份顺序：前 base 后 adsorption（避免后处理破坏 min-dist）
+    symbols = base_syms + ad_syms
 
-    atoms = gen_mix_structure(fixed_ranges, vacuum=vacuum, params=params)
+    # 自动决定 f_base：按共价球体积比例（packing=1.0，仅用于分区比例）
+    Vb = estimate_volume_from_covalent_spheres(base_syms, packing=1.0)
+    Va = estimate_volume_from_covalent_spheres(ad_syms, packing=1.0)
+    f_base = Vb / (Vb + Va + 1e-12)
+
+    # 给每个原子设置分数 z 采样范围
+    z_bounds = [(0.0, f_base)] * base_n + [(f_base, 1.0)] * ad_n
+
+    # 建议 adsorption 使用 incremental（你现在 JSON 已是 incremental）
+    if params.sampling_mode.lower() != "incremental":
+        print("[WARN] adsorption with z partition works best with sampling_mode='incremental'.")
+
+    atoms = gen_structure_from_symbols(symbols, vacuum=vacuum, params=params, z_bounds=z_bounds)
     if atoms is None:
         return None
 
-    pos_sorted = np.array(sorted(atoms.positions, key=lambda p: p[2]))
-    base_pos = pos_sorted[:base_n].copy()
-    ad_pos = pos_sorted[base_n:base_n + ad_n].copy()
+    # 标记 base(0)/ads(1)，便于后续识别（不改变坐标）
+    tags = np.zeros(len(symbols), dtype=int)
+    tags[base_n:] = 1
+    atoms.set_tags(tags.tolist())
 
-    np.random.shuffle(base_pos)
-    np.random.shuffle(ad_pos)
-    atoms.set_positions(np.vstack([base_pos, ad_pos]))
+    # 记录分区比例，写入 extxyz/cif 时可保留在 info（extxyz 会保留）
+    atoms.info["f_base"] = float(f_base)
+    atoms.info["base_n"] = int(base_n)
+    atoms.info["ads_n"] = int(ad_n)
+
     return atoms
 
 
