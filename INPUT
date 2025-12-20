@@ -1,0 +1,13 @@
+INPUT_PARAMETERS
+suffix                  system
+pseudo_dir              ./
+orbital_dir		        ./
+
+kspacing                0.15
+ecutwfc                 100             # Rydberg
+scf_thr                 1e-6		    # SCF criterion
+basis_type              lcao         
+   
+calculation             relax
+relax_nmax              1
+vdw_method              d3_bj

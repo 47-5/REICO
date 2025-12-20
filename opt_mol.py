@@ -103,20 +103,21 @@ def opt_a_mol(read_file_path, read_file_format=None, write_file_path='opted.xyz'
 
 if __name__ == '__main__':
 
-    run_mode = 'batch'
+    run_mode = 'single'
 
     if run_mode == 'single':
         atoms = opt_a_mol(
-            read_file_path='reico_random_structs/structure_000001.cif',
+            read_file_path='reico_out/SiO-GaOH-ad/structure_000001.cif',
             read_file_format='cif',
             write_file_path='opted.cif',
             write_file_format='cif',
-            dp_model_path='DPA3_finetune_zeo_iter009_GaHY_01.pth',
-            head='GaHY',
+            dp_model_path='DPA3_12layer_finetune_zeo_iter0010_reico_SiAlGaCHO_01.pth',
+            head='reico_SiAlGaCHO',
             traj_path='optimization_traj.pdb',
             traj_format='proteindatabank',
             traj_interval=1,
-            opt_cell=True
+            opt_cell=True,
+            f_max=0.5
         )
 
     elif run_mode == 'batch':
